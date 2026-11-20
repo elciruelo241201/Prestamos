@@ -630,7 +630,13 @@ function textoResumen(p,c){
   L.push('✅ Abonado: '+fmt(c.abonado)+((p.abonos||[]).length?' ('+p.abonos.length+(p.abonos.length===1?' abono)':' abonos)'):''));
   L.push('📌 Saldo pendiente: '+fmt(c.saldo));
   if(c.saldo>0){
-    if(c.atrasado>0) L.push('⚠️ Atrasado: '+fmt(c.atrasado));
+    if(c.atrasado>0){
+      const VV=c.cuotas.filter(q=>q.e==='vencido');
+      L.push('','🔴 Pagos vencidos:');
+      VV.slice(0,12).forEach(q=>L.push('   • '+(c.prog?'Pago '+q.n+' — ':'')+fdate(q.fecha)+': '+fmt(q.falta)+(q.falta<q.monto-0.005?' (resto)':'')));
+      if(VV.length>12) L.push('   • …y '+(VV.length-12)+' más');
+      L.push('⚠️ Total vencido: '+fmt(c.atrasado),'');
+    }
     if(c.sig&&c.sig.fecha) L.push('📅 '+(c.prog?'Próximo pago: '+fmt(c.sig.falta)+' el ':'Fecha compromiso: ')+fdate(c.sig.fecha));
     if(c.aCapital>0.005) L.push('💪 Abonos extra a capital: '+fmt(c.aCapital)+(c.fechaFin?' (terminas el '+fdate(c.fechaFin)+')':''));
     if(c.ahorro>0.005) L.push('🎁 Interés que te ahorraste: '+fmt(c.ahorro));
@@ -693,7 +699,7 @@ function dibujar(p){
   items.forEach((it,i)=>{
     const X=P+(i%2)*(bw+20), Y=y+Math.floor(i/2)*150;
     rr(x,X,Y,bw,130,24); x.fillStyle='#fff'; x.fill();
-    x.fillStyle='#6b7488'; x.font='700 26px '+FONT; x.fillText(it[0].toUpperCase(),X+28,Y+48);
+    x.fillStyle='#6b7488'; let fs=26; x.font='700 '+fs+'px '+FONT; while(fs>16&&x.measureText(it[0].toUpperCase()).width>bw-50){ fs--; x.font='700 '+fs+'px '+FONT; } x.fillText(it[0].toUpperCase(),X+28,Y+48);
     x.fillStyle=it[2]; x.font='800 46px '+FONT; x.fillText(it[1],X+28,Y+104);
   });
   y+=Math.ceil(items.length/2)*150+20;
@@ -720,6 +726,27 @@ function dibujar(p){
       rr(x,lx,y,26,26,7); x.fillStyle=col; x.fill(); x.fillStyle='#6b7488'; x.fillText(t,lx+36,y+22); lx+=36+x.measureText(t).width+30;
     });
     y+=60;
+  }
+  // pagos vencidos (detalle para el familiar)
+  const VV=c.cuotas.filter(q=>q.e==='vencido');
+  if(VV.length){
+    const MAX=10, lst=VV.slice(0,MAX), H0=hoy();
+    const bh=100+lst.length*84+(VV.length>MAX?50:0)+80;
+    rr(x,P,y,W-2*P,bh,28); x.fillStyle='#fde6e6'; x.fill();
+    x.fillStyle='#e03131'; x.font='800 30px '+FONT; x.fillText('🔴 PAGOS VENCIDOS ('+VV.length+')',P+34,y+60);
+    let yy=y+100;
+    lst.forEach(q=>{
+      const d=dias(q.fecha,H0), parcial=q.falta<q.monto-0.005;
+      x.fillStyle='#14213d'; x.font='700 32px '+FONT; x.fillText((c.prog?'Pago '+q.n:'Pago')+' · '+fdate(q.fecha),P+34,yy+30);
+      x.fillStyle='#6b7488'; x.font='600 25px '+FONT; x.fillText('Debió pagarse hace '+d+(d===1?' día':' días')+(parcial?' · abonado parcial':''),P+34,yy+64);
+      x.fillStyle='#e03131'; x.font='800 36px '+FONT; x.textAlign='right'; x.fillText(fmt(q.falta),W-P-34,yy+44); x.textAlign='left';
+      yy+=84;
+    });
+    if(VV.length>MAX){ x.fillStyle='#6b7488'; x.font='600 26px '+FONT; x.fillText('…y '+(VV.length-MAX)+' pagos vencidos más',P+34,yy+30); yy+=50; }
+    x.strokeStyle='rgba(224,49,49,.35)'; x.lineWidth=2; x.beginPath(); x.moveTo(P+34,yy+6); x.lineTo(W-P-34,yy+6); x.stroke();
+    x.fillStyle='#14213d'; x.font='800 32px '+FONT; x.fillText('Total vencido',P+34,yy+56);
+    x.fillStyle='#e03131'; x.font='800 40px '+FONT; x.textAlign='right'; x.fillText(fmt(c.atrasado),W-P-34,yy+58); x.textAlign='left';
+    y+=bh+30;
   }
   // próximo pago
   if(c.saldo>0&&c.sig&&c.sig.fecha){
@@ -764,7 +791,7 @@ function menu(){
    +'<p class="p" style="margin-top:10px">Último respaldo: <b style="color:var(--ink)">'+(u?fdate(u.slice(0,10)):'nunca')+'</b></p>'
    +'<button class="btn" id="exp">⬇️ Descargar respaldo</button>'
    +'<button class="btn alt" id="imp">⬆️ Restaurar desde respaldo</button><input type="file" id="file" accept=".json,application/json,text/plain" style="display:none">'
-   +'<p class="sub" style="margin-top:16px;text-align:center">🚦 Control de Préstamos · Versión 2026-11-20 (tabla acordada)<br>Amarillo: '+DIAS_AMARILLO+' días antes del pago</p>',
+   +'<p class="sub" style="margin-top:16px;text-align:center">🚦 Control de Préstamos · Versión 2026-11-20b (pagos vencidos)<br>Amarillo: '+DIAS_AMARILLO+' días antes del pago</p>',
   ov=>{
     const q=s=>ov.querySelector(s);
     q('#exp').onclick=()=>{
