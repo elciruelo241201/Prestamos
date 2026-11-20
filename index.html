@@ -764,7 +764,7 @@ function menu(){
    +'<p class="p" style="margin-top:10px">Último respaldo: <b style="color:var(--ink)">'+(u?fdate(u.slice(0,10)):'nunca')+'</b></p>'
    +'<button class="btn" id="exp">⬇️ Descargar respaldo</button>'
    +'<button class="btn alt" id="imp">⬆️ Restaurar desde respaldo</button><input type="file" id="file" accept=".json,application/json,text/plain" style="display:none">'
-   +'<p class="sub" style="margin-top:16px;text-align:center">🚦 Control de Préstamos · Amarillo: '+DIAS_AMARILLO+' días antes del pago</p>',
+   +'<p class="sub" style="margin-top:16px;text-align:center">🚦 Control de Préstamos · Versión 2026-11-20 (tabla acordada)<br>Amarillo: '+DIAS_AMARILLO+' días antes del pago</p>',
   ov=>{
     const q=s=>ov.querySelector(s);
     q('#exp').onclick=()=>{
