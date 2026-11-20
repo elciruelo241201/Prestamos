@@ -230,55 +230,110 @@ function interesDe(monto,it,meses){
   if(it.tipo==='fijo') return r2(v);
   return 0;
 }
-function cuotasDe(p,total){
-  const pl=p.plan||{tipo:'unico'};
-  if(pl.tipo==='unico') return [{n:1,fecha:pl.inicio||'',monto:total}];
-  const n=Math.max(1,pl.n|0); let c=r2(pl.cuota);
-  if(!(c>0)||c*(n-1)>=total) c=r2(total/n);
-  return genFechas(pl.tipo,pl.inicio,n).map((f,i)=>({n:i+1,fecha:f,monto:i===n-1?r2(total-c*(n-1)):c}));
+const AMORT=t=>t==='mensual'||t==='anual';   // interés sobre saldo (como tabla de amortización)
+function tasaPeriodo(tipoPlan,it){ const v=(Number(it.valor)||0)/100; return (it.tipo==='anual'?v/12:v)*FREQ[tipoPlan].mes; }
+function amort(P,i,cuota){
+  if(!(cuota>0)) return null;
+  const out=[]; let s=r2(P);
+  for(let k=0;k<1200&&s>0.005;k++){
+    const int=r2(s*i);
+    if(cuota<=int+0.005) return null;
+    if(s+int<=cuota+0.005){ out.push({monto:r2(s+int),cap:s,int}); s=0; }
+    else { const cap=r2(cuota-int); out.push({monto:r2(cuota),cap,int}); s=r2(s-cap); }
+  }
+  return s>0.005?null:out;
+}
+function cuotaFrancesa(P,i,n){ return i<=0?Math.ceil(P/n*100)/100:Math.ceil(P*i/(1-Math.pow(1+i,-n))*100)/100; }
+/* Cada pago = capital + interés */
+function cuotasDe(p){
+  const pl=p.plan||{tipo:'unico'}, it=p.interes||{tipo:'ninguno'}, P=r2(p.monto);
+  if(pl.tipo==='unico'){ const I=interesDe(P,it,mesesPlazo(p)); return [{n:1,fecha:pl.inicio||'',monto:r2(P+I),cap:P,int:I}]; }
+  let rows;
+  if(AMORT(it.tipo)){
+    const i=tasaPeriodo(pl.tipo,it);
+    rows=amort(P,i,r2(pl.cuota))||amort(P,i,cuotaFrancesa(P,i,Math.max(1,pl.n|0)))||[{monto:P,cap:P,int:0}];
+  } else {
+    const n=Math.max(1,pl.n|0), I=interesDe(P,it,0), total=r2(P+I); let c=r2(pl.cuota);
+    if(!(c>0)||c*(n-1)>=total) c=r2(total/n);
+    const ii=r2(I/n); rows=[];
+    for(let k=0;k<n;k++){ const last=k===n-1, monto=last?r2(total-c*(n-1)):c, int=last?r2(I-ii*(n-1)):ii; rows.push({monto,int,cap:r2(monto-int)}); }
+  }
+  const f=genFechas(pl.tipo,pl.inicio,rows.length);
+  return rows.map((r,k)=>({n:k+1,fecha:f[k]||'',...r}));
 }
 function calc(p){
   const H=hoy();
   const prog=!!(p.plan&&p.plan.tipo!=='unico');
   const meses=mesesPlazo(p);
-  const interes=interesDe(p.monto,p.interes,meses);
-  const total=r2(p.monto+interes);
-  const abonado=r2((p.abonos||[]).reduce((s,a)=>s+Number(a.monto||0),0));
-  const saldo=Math.max(0,r2(total-abonado));
-  const pct=total>0?Math.min(100,abonado/total*100):0;
-
   /* Reparto de cada abono (en orden de fecha):
-     1) pagos vencidos + el pago que vence pronto (monto pactado)
-     2) lo que sobra va a CAPITAL: cubre los últimos pagos del plan (termina antes) */
-  const cuotas=cuotasDe(p,total).map(c=>({...c,pagado:0,cap:0}));
-  const falta=c=>r2(c.monto-c.pagado-c.cap);
-  let aCapital=0;
+     1) pagos vencidos + el pago que vence pronto (monto pactado completo)
+     2) lo que sobra va a CAPITAL de los últimos pagos: su interés desaparece y el préstamo termina antes */
+  let cuotas, interes, aCapital=0, ahorro=0;
+  const falta=c=>r2(c.monto-c.pagado-c.capx-c.perd);
   const abs=[...(p.abonos||[])].map((a,i)=>({...a,_i:i})).sort((a,b)=>(a.fecha||'').localeCompare(b.fecha||'')||a._i-b._i);
-  for(const a of abs){
-    let rest=r2(a.monto);
-    const lim=prog&&a.fecha?addDays(a.fecha,VENT[p.plan.tipo]):null;
-    for(const c of cuotas){
-      if(rest<=0.005) break;
-      if(lim&&c.fecha&&c.fecha>lim) break;
-      const f=falta(c); if(f<=0.005) continue;
-      const pg=Math.min(rest,f); c.pagado=r2(c.pagado+pg); rest=r2(rest-pg);
+  if(prog&&AMORT(p.interes&&p.interes.tipo)){
+    /* Interés SOBRE SALDO (como tabla de amortización / banco):
+       el interés de cada pago se calcula con el capital que realmente se debe.
+       Lo abonado de más baja el capital al momento → el interés siguiente baja y el plazo se acorta. */
+    const i=tasaPeriodo(p.plan.tipo,p.interes), P=r2(p.monto);
+    let C=r2(p.plan.cuota); if(!amort(P,i,C)) C=cuotaFrancesa(P,i,Math.max(1,p.plan.n|0));
+    const base=amort(P,i,C)||[];
+    interes=r2(base.reduce((s,c)=>s+c.int,0));
+    const F=genFechas(p.plan.tipo,p.plan.inicio,Math.min(1200,base.length+2));
+    cuotas=[]; let S=P;
+    const gen=()=>{ const int=r2(S*i); let monto,cap; if(S+int<=C+0.005){ monto=r2(S+int); cap=S; } else { monto=C; cap=r2(C-int); } S=r2(S-cap);
+      cuotas.push({n:cuotas.length+1,fecha:F[cuotas.length]||'',monto,cap,int,pagado:0,capx:0,perd:0}); };
+    for(const a of abs){
+      const lim=a.fecha?addDays(a.fecha,VENT[p.plan.tipo]):'9999';
+      while(S>0.005&&cuotas.length<1200&&(F[cuotas.length]||'9999')<=lim) gen();
+      let rest=r2(a.monto);
+      for(const c of cuotas){ if(rest<=0.005) break; const f=falta(c); if(f<=0.005) continue; const pg=Math.min(rest,f); c.pagado=r2(c.pagado+pg); rest=r2(rest-pg); }
+      if(rest>0.005&&S>0.005){ const pg=Math.min(rest,S); S=r2(S-pg); rest=r2(rest-pg); aCapital=r2(aCapital+pg); }
     }
-    if(rest>0.005&&prog){
-      for(let i=cuotas.length-1;i>=0&&rest>0.005;i--){
-        const f=falta(cuotas[i]); if(f<=0.005) continue;
-        const pg=Math.min(rest,f); cuotas[i].cap=r2(cuotas[i].cap+pg); rest=r2(rest-pg); aCapital=r2(aCapital+pg);
+    while(S>0.005&&cuotas.length<1200) gen();
+    ahorro=Math.max(0,r2(interes-cuotas.reduce((s,c)=>s+c.int,0)));
+  } else {
+    /* Interés fijo (% total o $ fijo) repartido en los pagos, o sin interés:
+       lo abonado de más cubre el capital de los ÚLTIMOS pagos y su interés desaparece. */
+    cuotas=cuotasDe(p).map(c=>({...c,pagado:0,capx:0,perd:0}));
+    interes=r2(cuotas.reduce((s,c)=>s+c.int,0));
+    for(const a of abs){
+      let rest=r2(a.monto);
+      const lim=prog&&a.fecha?addDays(a.fecha,VENT[p.plan.tipo]):null;
+      for(const c of cuotas){
+        if(rest<=0.005) break;
+        if(lim&&c.fecha&&c.fecha>lim) break;
+        const f=falta(c); if(f<=0.005) continue;
+        const pg=Math.min(rest,f); c.pagado=r2(c.pagado+pg); rest=r2(rest-pg);
       }
+      if(rest>0.005&&prog){
+        for(let i=cuotas.length-1;i>=0&&rest>0.005;i--){
+          const c=cuotas[i]; if(falta(c)<=0.005) continue;
+          if(c.pagado>0.005) break;
+          const capRest=r2(c.cap-c.capx); if(capRest<=0.005) continue;
+          const pg=Math.min(rest,capRest); c.capx=r2(c.capx+pg); c.perd=c.cap>0?r2(c.int*c.capx/c.cap):0;
+          rest=r2(rest-pg); aCapital=r2(aCapital+pg);
+        }
+      }
+      if(rest>0.005) for(const c of cuotas){ const f=falta(c); if(f>0.005){ const pg=Math.min(rest,f); c.pagado=r2(c.pagado+pg); rest=r2(rest-pg); } }
     }
-    if(rest>0.005) for(const c of cuotas){ const f=falta(c); if(f>0.005){ const pg=Math.min(rest,f); c.pagado=r2(c.pagado+pg); rest=r2(rest-pg); } }
+    ahorro=r2(cuotas.reduce((s,c)=>s+c.perd,0));
   }
   cuotas.forEach(c=>{
-    const cub=r2(c.pagado+c.cap); c.falta=r2(c.monto-cub);
-    if(c.falta<=0.005) c.e=(c.cap>0.005&&c.pagado<=0.005)?'capital':'pagado';
+    c.falta=falta(c); const cub=r2(c.pagado+c.capx);
+    if(c.falta<=0.005){ c.falta=0; c.e=(c.capx>0.005&&c.pagado<=0.005)?'capital':'pagado'; }
     else if(c.fecha&&c.fecha<H) c.e='vencido';
     else if(c.fecha&&dias(H,c.fecha)<=DIAS_AMARILLO) c.e='porvencer';
     else if(cub>0) c.e='parcial';
     else c.e='pendiente';
   });
+  const total=r2(p.monto+interes-ahorro);
+  const abonado=r2((p.abonos||[]).reduce((s,a)=>s+Number(a.monto||0),0));
+  const saldo=Math.max(0,r2(cuotas.reduce((s,c)=>s+c.falta,0)));
+  const pct=total>0?Math.min(100,abonado/total*100):0;
+  // Cuánto se necesita HOY para liquidar (el interés de los pagos futuros desaparece)
+  const limHoy=prog?addDays(H,VENT[p.plan.tipo]):null;
+  const payoff=r2(cuotas.reduce((s,c)=>{ if(c.falta<=0) return s; if(!prog||c.pagado>0.005||(c.fecha&&c.fecha<=limHoy)) return s+c.falta; return s+r2(c.cap-c.capx); },0));
   const venc=cuotas.filter(c=>c.e==='vencido');
   const atrasado=r2(venc.reduce((s,c)=>s+c.falta,0));
   const sig=cuotas.find(c=>c.falta>0.005&&c.e!=='vencido');
@@ -299,17 +354,18 @@ function calc(p){
     if(d<=DIAS_AMARILLO){ k='pv'; due='🟡 '+q+(d===0?'HOY':fshort(sig.fecha)+(d===1?' (mañana)':' (en '+d+' días)')); }
     else { k='ok'; due='🟢 '+q+fshort(sig.fecha)+' (faltan '+d+' días)'; }
   }
-  return {prog,meses,interes,total,abonado,saldo,pct,cuotas,atrasado,sig,pagadas,aCapital,fechaFin,st:{k,...SEM[k],due}};
+  return {prog,meses,interes,ahorro,total,abonado,saldo,payoff,pct,cuotas,atrasado,sig,pagadas,aCapital,fechaFin,st:{k,...SEM[k],due}};
 }
 function planTexto(p,c){
   const pl=p.plan||{tipo:'unico'};
   if(pl.tipo==='unico') return pl.inicio?'Pago único el '+fdate(pl.inicio):'Pago único sin fecha';
-  return pl.n+' pagos de '+fmt(c.cuotas[0]?c.cuotas[0].monto:0)+' '+FREQ[pl.tipo].cada;
+  const n=c.cuotas.length, a=c.cuotas[0]?c.cuotas[0].monto:0, z=c.cuotas[n-1]?c.cuotas[n-1].monto:0;
+  return n+' pagos de '+fmt(a)+' '+FREQ[pl.tipo].cada+(n>1&&Math.abs(a-z)>0.005?' (último de '+fmt(z)+')':'');
 }
 function interesTexto(p){
   const i=p.interes; if(!i||i.tipo==='ninguno') return '';
   if(i.tipo==='fijo') return fmt(i.valor)+' fijo';
-  return i.valor+'% '+({total:'total',mensual:'mensual',anual:'anual'})[i.tipo];
+  return i.valor+'% '+({total:'total',mensual:'mensual',anual:'anual'})[i.tipo]+(AMORT(i.tipo)&&p.plan&&p.plan.tipo!=='unico'?' s/saldo':'');
 }
 const CLS={pagado:'g',capital:'cap',vencido:'r',porvencer:'y',parcial:'p',pendiente:''};
 function lineaHTML(c){ return '<div class="linea">'+c.cuotas.map(q=>'<i class="'+CLS[q.e]+'"></i>').join('')+'</div>'; }
@@ -396,6 +452,8 @@ function detalle(id,verTodo){
    +'<div>Abonado<b style="color:var(--g)">'+fmt(c.abonado)+'</b></div><div class="s">Saldo<b>'+fmt(c.saldo)+'</b></div>'
    +(c.atrasado>0?'<div>Atrasado<b style="color:var(--r)">'+fmt(c.atrasado)+'</b></div>':'')
    +(c.aCapital>0.005?'<div>Extra a capital<b style="color:var(--pur)">'+fmt(c.aCapital)+'</b></div>':'')
+   +(c.ahorro>0.005?'<div>Interés eliminado<b style="color:var(--g)">−'+fmt(c.ahorro)+'</b></div>':'')
+   +(c.saldo>0&&c.payoff<c.saldo-0.005?'<div>Para liquidar hoy<b>'+fmt(c.payoff)+'</b></div>':'')
    +(c.prog&&c.saldo>0&&c.fechaFin?'<div>Terminaría el<b>'+fdate(c.fechaFin)+'</b></div>':'')+'</div>'
    +'<div class="due">'+c.st.due+'</div></div>';
   h+='<div class="note">🗓 <b>Acuerdo:</b> '+esc(planTexto(p,c))+(p.nota?'<br>📝 '+esc(p.nota):'')+'</div>';
@@ -452,7 +510,7 @@ function formPrestamo(p){
    +'<div><label>Número de pagos</label><input class="in" id="fn" type="number" inputmode="numeric" min="1" step="1" placeholder="Ej. 12" value="'+(pl.tipo!=='unico'&&pl.n?pl.n:'')+'"></div></div>'
    +'<p class="sub" style="margin-top:6px">Llena uno de los dos; el otro se calcula solo.</p></div></div>'
    +'<div class="box"><h4>％ Interés</h4><div class="seg" style="margin-top:10px">'+Object.keys(INT).map(k=>'<button type="button" data-i="'+k+'">'+INT[k].c+'</button>').join('')+'</div>'
-   +'<div id="iv"><label id="ivl">Porcentaje</label><input class="in" id="fv" type="number" inputmode="decimal" min="0" step="0.01" value="'+(it.valor||'')+'"></div></div>'
+   +'<div id="iv"><label id="ivl">Porcentaje</label><input class="in" id="fv" type="number" inputmode="decimal" min="0" step="0.01" value="'+(it.valor||'')+'"><p class="sub" id="ivn" style="margin-top:6px"></p></div></div>'
    +'<div class="prev" id="prev"></div>'
    +'<label>WhatsApp de la persona (opcional)</label><input class="in" id="ft" type="tel" inputmode="tel" placeholder="10 dígitos" value="'+esc(p.tel||'')+'">'
    +'<label>Nota (opcional)</label><textarea class="in" id="fx" rows="2" placeholder="Ej. Paga los sábados en efectivo">'+esc(p.nota||'')+'</textarea>'
@@ -466,11 +524,12 @@ function formPrestamo(p){
       if(f.plan==='unico') plan={tipo:'unico',inicio:v('#fc')};
       else {
         let n=parseInt(v('#fn'),10), cuota=r2(parseFloat(v('#fq')));
+        const am=AMORT(f.int), i=am?tasaPeriodo(f.plan,interes):0, tFlat=monto+interesDe(monto,interes,0);
         if(f.modo==='cuota'&&cuota>0&&monto>0){
-          n=0; for(let k=1;k<=600;k++){ const t=monto+interesDe(monto,interes,k*FREQ[f.plan].mes); if(cuota*k>=t-0.005){n=k;break;} }
-          if(!n) error='Ese pago no alcanza a cubrir el interés. Sube el monto de cada pago.';
+          if(am){ const rows=amort(monto,i,cuota); if(rows) n=rows.length; else { n=0; error='Ese pago no alcanza a cubrir el interés. Sube el monto de cada pago.'; } }
+          else n=Math.ceil(tFlat/cuota-1e-9);
         }
-        if(f.modo==='n'&&n>0&&monto>0){ const t=monto+interesDe(monto,interes,n*FREQ[f.plan].mes); cuota=r2(Math.ceil(t/n*100)/100); }
+        if(f.modo==='n'&&n>0&&monto>0) cuota=am?cuotaFrancesa(monto,i,n):r2(Math.ceil(tFlat/n*100)/100);
         plan={tipo:f.plan,inicio:v('#fi'),n:n>0?n:0,cuota:cuota>0?cuota:0};
       }
       return {obj:{monto,fecha:v('#ff')||hoy(),interes,plan},error};
@@ -481,6 +540,7 @@ function formPrestamo(p){
       q('#iv').style.display=f.int==='ninguno'?'none':'';
       q('#ivl').textContent=f.int==='fijo'?'Cantidad de interés ($)':f.int==='mensual'?'Porcentaje mensual (%)':f.int==='anual'?'Porcentaje anual (%)':'Porcentaje total (%)';
       q('#fv').placeholder=f.int==='fijo'?'$0.00':'Ej. 5';
+      q('#ivn').textContent=AMORT(f.int)?'Se cobra sobre el saldo que va quedando (como banco). Si abona de más, el interés baja.':'Se reparte en partes iguales en cada pago. Si abona de más, el interés de los pagos adelantados desaparece.';
       ov.querySelectorAll('[data-p]').forEach(b=>b.classList.toggle('on',b.dataset.p===f.plan));
       ov.querySelectorAll('[data-i]').forEach(b=>b.classList.toggle('on',b.dataset.i===f.int));
       const {obj,error}=leer(), pr=q('#prev');
@@ -492,11 +552,11 @@ function formPrestamo(p){
       if(!(obj.monto>0)){ pr.className='prev'; pr.innerHTML='Escribe el monto para ver el resumen.'; return; }
       const c=calc({...obj,abonos:[]});
       let s='';
-      if(c.interes) s+='Interés: <b style="color:var(--pur)">'+fmt(c.interes)+'</b>'+((f.int==='mensual'||f.int==='anual')?' <span class="sub">('+(obj.interes.valor||0)+'% '+(f.int==='anual'?'anual':'mensual')+' × '+(Math.round(c.meses*10)/10)+' meses'+(f.int==='anual'?' ÷ 12':'')+')</span>':'')+'<br>';
+      if(c.interes) s+='Interés: <b style="color:var(--pur)">'+fmt(c.interes)+'</b>'+(AMORT(f.int)?(f.plan==='unico'?' <span class="sub">('+(obj.interes.valor||0)+'% '+(f.int==='anual'?'anual':'mensual')+' × '+(Math.round(c.meses*10)/10)+' meses'+(f.int==='anual'?' ÷ 12':'')+')</span>':' <span class="sub">(sobre saldo, pagando puntual)</span>'):'')+'<br>';
       s+='Total a pagar: <b>'+fmt(c.total)+'</b>';
       if(f.plan!=='unico'&&obj.plan.n>0){
         const last=c.cuotas[c.cuotas.length-1];
-        s+='<br>'+obj.plan.n+' pagos de <b>'+fmt(c.cuotas[0].monto)+'</b> '+FREQ[f.plan].cada+(c.cuotas.length>1&&Math.abs(last.monto-c.cuotas[0].monto)>0.005?' (último de '+fmt(last.monto)+')':'');
+        s+='<br>'+c.cuotas.length+' pagos de <b>'+fmt(c.cuotas[0].monto)+'</b> '+FREQ[f.plan].cada+(c.cuotas.length>1&&Math.abs(last.monto-c.cuotas[0].monto)>0.005?' (último de '+fmt(last.monto)+')':'');
         if(obj.plan.inicio) s+='<br>Del '+fdate(c.cuotas[0].fecha)+' al '+fdate(last.fecha);
       }
       pr.className='prev'; pr.innerHTML=s;
@@ -533,11 +593,11 @@ function formAbono(p){
    +'<p class="p">Saldo actual: <b style="color:var(--ink)">'+fmt(c.saldo)+'</b>'+(c.atrasado>0?'<br>Atrasado: <b style="color:var(--r)">'+fmt(c.atrasado)+'</b>':'')+'</p>'
    +'<label>Monto del abono</label><input class="in" id="am" type="number" inputmode="decimal" min="0" step="0.01" placeholder="$0.00">'
    +'<div class="chips" style="padding:8px 0 0">'
-   +(c.prog&&sug>0&&sug<c.saldo?'<button class="chip" data-v="'+sug+'">'+(c.atrasado>0?'Ponerse al corriente':'Pago pactado')+' ('+fmt(sug)+')</button>':'')
-   +'<button class="chip" data-v="'+c.saldo+'">Liquidar todo ('+fmt(c.saldo)+')</button></div>'
+   +(c.prog&&sug>0&&sug<c.payoff?'<button class="chip" data-v="'+sug+'">'+(c.atrasado>0?'Ponerse al corriente':'Pago pactado')+' ('+fmt(sug)+')</button>':'')
+   +'<button class="chip" data-v="'+c.payoff+'">Liquidar todo ('+fmt(c.payoff)+')</button></div>'
    +'<label>Fecha</label><input class="in" id="af" type="date" value="'+hoy()+'">'
    +'<label>Nota (opcional)</label><input class="in" id="an" placeholder="Ej. Efectivo / transferencia">'
-   +(c.prog?'<div class="note">💡 Lo que pase del pago pactado (más lo atrasado, si hay) se abona a <b>capital</b>: baja el saldo y termina antes, sin cambiar el pago de cada '+FREQ[p.plan.tipo].per+'.</div>':'')
+   +(c.prog?'<div class="note">💡 Lo que pase del pago pactado (más lo atrasado, si hay) se abona a <b>capital</b> de los últimos pagos: su interés desaparece y el préstamo termina antes, sin cambiar el pago de cada '+FREQ[p.plan.tipo].per+'.</div>':'')
    +'<div class="err" id="ae"></div><button class="btn gold" id="as">Guardar abono</button>',
   ov=>{
     const q=s=>ov.querySelector(s);
@@ -545,7 +605,7 @@ function formAbono(p){
     q('#as').onclick=()=>{
       const m=r2(parseFloat(q('#am').value));
       if(!(m>0)) return q('#ae').textContent='Escribe un monto mayor a 0.';
-      if(m>c.saldo+0.001) return q('#ae').textContent='El abono es mayor al saldo ('+fmt(c.saldo)+').';
+      if(m>c.payoff+0.001) return q('#ae').textContent='Para liquidar todo bastan '+fmt(c.payoff)+'.';
       p.abonos=p.abonos||[]; p.abonos.push({id:uid(),monto:m,fecha:q('#af').value||hoy(),nota:q('#an').value.trim()});
       save(calc(p).saldo<=0?'🎉 ¡Préstamo liquidado!':'Abono registrado ✓'); detalle(p.id);
     };
@@ -565,6 +625,7 @@ function textoResumen(p,c){
     if(c.atrasado>0) L.push('⚠️ Atrasado: '+fmt(c.atrasado));
     if(c.sig&&c.sig.fecha) L.push('📅 '+(c.prog?'Próximo pago: '+fmt(c.sig.falta)+' el ':'Fecha compromiso: ')+fdate(c.sig.fecha));
     if(c.aCapital>0.005) L.push('💪 Abonos extra a capital: '+fmt(c.aCapital)+(c.fechaFin?' (terminas el '+fdate(c.fechaFin)+')':''));
+    if(c.ahorro>0.005) L.push('🎁 Interés que te ahorraste: '+fmt(c.ahorro));
     L.push('','¡Gracias!');
   } else L.push('','🎉 ¡Préstamo liquidado! Muchas gracias.');
   return L.join('\n');
@@ -619,6 +680,7 @@ function dibujar(p){
   items.push(['Abonado',fmt(c.abonado),'#1f9d55'],['Saldo pendiente',fmt(c.saldo),S.hex]);
   if(c.atrasado>0) items.push(['Atrasado',fmt(c.atrasado),'#e03131']);
   if(c.aCapital>0.005) items.push(['Extra a capital',fmt(c.aCapital),'#7a4fd6']);
+  if(c.ahorro>0.005) items.push(['Interés ahorrado',fmt(c.ahorro),'#1f9d55']);
   const bw=(W-2*P-20)/2;
   items.forEach((it,i)=>{
     const X=P+(i%2)*(bw+20), Y=y+Math.floor(i/2)*150;
