@@ -247,6 +247,10 @@ function cuotaFrancesa(P,i,n){ return i<=0?Math.ceil(P/n*100)/100:Math.ceil(P*i/
 /* Cada pago = capital + interés */
 function cuotasDe(p){
   const pl=p.plan||{tipo:'unico'}, it=p.interes||{tipo:'ninguno'}, P=r2(p.monto);
+  if(pl.tabla&&pl.tabla.length&&pl.tipo!=='unico'){ // tabla personalizada: [monto, interés] por pago, en el orden acordado
+    const f=genFechas(pl.tipo,pl.inicio,pl.tabla.length);
+    return pl.tabla.map((t,k)=>({n:k+1,fecha:f[k]||'',monto:r2(t[0]),int:r2(t[1]||0),cap:r2(t[0]-(t[1]||0))}));
+  }
   if(pl.tipo==='unico'){ const I=interesDe(P,it,mesesPlazo(p)); return [{n:1,fecha:pl.inicio||'',monto:r2(P+I),cap:P,int:I}]; }
   let rows;
   if(AMORT(it.tipo)){
@@ -364,6 +368,7 @@ function planTexto(p,c){
 }
 function interesTexto(p){
   const i=p.interes; if(!i||i.tipo==='ninguno') return '';
+  if(i.tipo==='tabla') return 'según tabla acordada';
   if(i.tipo==='fijo') return fmt(i.valor)+' fijo';
   return i.valor+'% '+({total:'total',mensual:'mensual',anual:'anual'})[i.tipo]+(AMORT(i.tipo)&&p.plan&&p.plan.tipo!=='unico'?' s/saldo':'');
 }
@@ -468,7 +473,7 @@ function detalle(id,verTodo){
     const vis=verTodo?c.cuotas:c.cuotas.slice(desde,desde+lim);
     const E={pagado:['✓','var(--gbg)','var(--g)','Pagado'],capital:['💪','var(--purbg)','var(--pur)','Cubierto con extra a capital'],vencido:['!','var(--rbg)','var(--r)','Vencido'],porvencer:['⏰','var(--ybg)','var(--y)','Por vencer'],parcial:['½','var(--graybg)','var(--muted)','Abonado parcial'],pendiente:['','var(--graybg)','var(--muted)','Pendiente']};
     h+='<div class="section">Calendario de pagos</div><div class="list">'
-     +vis.map(q=>{const e=E[q.e]; const parcial=q.falta>0.005&&q.falta<q.monto-0.005; return '<div class="it"><div class="dot" style="background:'+e[1]+';color:'+e[2]+'">'+(e[0]||q.n)+'</div><div class="t"><b>Pago '+q.n+'</b><div>'+fdate(q.fecha)+'</div></div><div class="m">'+fmt(q.monto)+'<small style="color:'+e[2]+'">'+e[3]+(parcial?' · faltan '+fmt(q.falta):'')+'</small></div></div>';}).join('')
+     +vis.map(q=>{const e=E[q.e]; const parcial=q.falta>0.005&&q.falta<q.monto-0.005; return '<div class="it"><div class="dot" style="background:'+e[1]+';color:'+e[2]+'">'+(e[0]||q.n)+'</div><div class="t"><b>Pago '+q.n+'</b><div>'+fdate(q.fecha)+(q.int>0.005?' · int. '+fmt(q.int)+' · cap. '+fmt(q.cap):'')+'</div></div><div class="m">'+fmt(q.monto)+'<small style="color:'+e[2]+'">'+e[3]+(parcial?' · faltan '+fmt(q.falta):'')+'</small></div></div>';}).join('')
      +'</div>'+(c.cuotas.length>6?'<button class="more" id="vt">'+(verTodo?'Ver menos':'Ver los '+c.cuotas.length+' pagos')+'</button>':'');
   }
   const items=[...(p.abonos||[])].sort((a,b)=>b.fecha.localeCompare(a.fecha));
@@ -517,7 +522,9 @@ function formPrestamo(p){
    +'<div class="err" id="fe"></div><button class="btn" id="fs">'+(ed?'Guardar cambios':'Registrar préstamo')+'</button>',
   ov=>{
     const q=s=>ov.querySelector(s), v=s=>q(s).value.trim();
+    const custom=!!(p.plan&&p.plan.tabla&&p.plan.tabla.length);
     function leer(){
+      if(custom) return {obj:{monto:p.monto,fecha:v('#ff')||p.fecha,interes:p.interes,plan:{...p.plan}},error:''};
       const monto=r2(parseFloat(v('#fm')));
       const interes={tipo:f.int,valor:f.int==='ninguno'?0:r2(parseFloat(v('#fv')))};
       let plan,error='';
@@ -535,6 +542,7 @@ function formPrestamo(p){
       return {obj:{monto,fecha:v('#ff')||hoy(),interes,plan},error};
     }
     function pintar(){
+      if(custom){ ov.querySelectorAll('.box').forEach(b=>b.style.display='none'); q('#fm').disabled=true; q('#prev').innerHTML='📋 Este préstamo usa la <b>tabla acordada</b> ('+p.plan.tabla.length+' pagos). Aquí solo puedes cambiar nombre, concepto, fecha, WhatsApp y nota.'; return; }
       q('#pu').style.display=f.plan==='unico'?'':'none';
       q('#pp').style.display=f.plan==='unico'?'none':'';
       q('#iv').style.display=f.int==='ninguno'?'none':'';
